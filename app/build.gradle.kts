@@ -274,7 +274,7 @@ android {
             isEnable = !buildingAppBundle
             reset()
             include("armeabi-v7a", "arm64-v8a")
-            isUniversalApk = false
+            isUniversalApk = true // FEL test: the CI upload step expects the universal APK
         }
     }
 
