@@ -156,10 +156,10 @@ android {
         buildConfigField("String", "PREMIUMIZE_CLIENT_ID", "\"${localProperties.getProperty("PREMIUMIZE_CLIENT_ID", "")}\"")
         buildConfigField("String", "SPONSOR_NAMES", buildConfigString(sponsorNames))
 
-        // One beta stream for this fork, including GitHub prereleases.
-        buildConfigField("String", "GITHUB_OWNER", "\"ysosrs123\"")
+        // FEL fork: updates come from LekaTheDon/NuvioTV-Fork releases (upstream release + FEL patches).
+        buildConfigField("String", "GITHUB_OWNER", "\"LekaTheDon\"")
         buildConfigField("String", "GITHUB_REPO", "\"NuvioTV-Fork\"")
-        buildConfigField("String", "GITHUB_REPO_NEW_NAME", "\"Nuvio-Arc\"")
+        buildConfigField("String", "GITHUB_REPO_NEW_NAME", "\"NuvioTV-Fork\"")
         buildConfigField("boolean", "UPDATE_CHECK_ENABLED", "true")
     }
 
