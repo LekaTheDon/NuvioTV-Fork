@@ -34,7 +34,10 @@
 
 namespace {
 
-constexpr const char *kDvesHevc = "/dev/amstream_dves_hevc";
+// FEL test build: the frame-mode dual-layer port. On the stock Ugoos kernel the stream-mode port never
+// starts the legacy video PTS table, so AMSTREAM_SET_TSTAMP_US64 fails with EINVAL; the frame port takes
+// the PTS per frame (vdec_set_pts64) and each write() is one whole sample, as queueSample() already sends.
+constexpr const char *kDvesHevc = "/dev/amstream_dves_hevc_frame";
 constexpr const char *kAmvideo = "/dev/amvideo";
 
 // ioctl numbers (magic 'S'); identical to vcodec.c.
