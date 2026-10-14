@@ -1,0 +1,215 @@
+name: FEL Fork Release
+
+# Rebuilds the latest official Nuvio Arc release (ysosrs123/NuvioTV-Fork) with this
+# branch's FEL patches on top, signs it with this fork's own key and publishes it as a
+# release here, where the app's built-in updater picks it up.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+    branches: [fel]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream release tag to build (empty = latest upstream release)"
+        required: false
+        type: string
+      force:
+        description: Build even if this upstream release and patch set were already published
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fel-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: ysosrs123/NuvioTV-Fork
+
+jobs:
+  release:
+    name: Build FEL release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out FEL branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve upstream release and decide whether to build
+        id: plan
+        env:
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_TAG:-}" ]]; then
+            upstream_tag="${INPUT_TAG}"
+          else
+            upstream_tag="$(gh api "repos/${UPSTREAM_REPO}/releases?per_page=30" \
+              --jq '[.[] | select(.draft | not)] | sort_by(.created_at) | reverse | .[0].tag_name')"
+          fi
+          [[ -n "${upstream_tag}" && "${upstream_tag}" != "null" ]] || { echo "No upstream release found." >&2; exit 1; }
+          echo "Upstream release: ${upstream_tag}"
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > fork-releases.json
+          already="$(jq --arg up "<!-- fel-upstream: ${upstream_tag} -->" --arg fork "<!-- fel-fork: ${GITHUB_SHA} -->" \
+            '[.[] | select((.body // "") | contains($up) and contains($fork))] | length' fork-releases.json)"
+          if [[ "${already}" != "0" && "${FORCE:-false}" != "true" ]]; then
+            echo "Already published for ${upstream_tag} with patch set ${GITHUB_SHA}; nothing to do."
+            echo "build=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          rev="$(jq -r --arg p "${upstream_tag}-fel." \
+            '[.[] | .tag_name | select(startswith($p)) | ltrimstr($p) | select(test("^[0-9]+$")) | tonumber] | (max // 0) + 1' \
+            fork-releases.json)"
+          (( rev <= 99 )) || { echo "Too many FEL revisions for ${upstream_tag}." >&2; exit 1; }
+          {
+            echo "build=true"
+            echo "upstream_tag=${upstream_tag}"
+            echo "rev=${rev}"
+            echo "fork_tag=${upstream_tag}-fel.${rev}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Apply FEL patches onto the upstream release
+        if: steps.plan.outputs.build == 'true'
+        id: patch
+        env:
+          UPSTREAM_TAG: ${{ steps.plan.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --quiet --no-tags upstream \
+            "+refs/heads/*:refs/upstream/heads/*" "+refs/tags/*:refs/upstream/tags/*"
+          git rev-parse --verify --quiet "refs/upstream/tags/${UPSTREAM_TAG}^{commit}" >/dev/null \
+            || { echo "Upstream tag ${UPSTREAM_TAG} not found." >&2; exit 1; }
+
+          # The FEL patch set is every commit on this branch that upstream doesn't have.
+          mapfile -t patches < <(git rev-list --reverse --topo-order --no-merges HEAD --not --glob='refs/upstream/*')
+          (( ${#patches[@]} > 0 )) || { echo "No FEL patches found on this branch." >&2; exit 1; }
+          echo "FEL patches:"; git log --no-walk=unsorted --format='  %h %s' "${patches[@]}"
+          git log --no-walk=unsorted --format='- %s' "${patches[@]}" > patch-list.md
+
+          git checkout --quiet --detach "refs/upstream/tags/${UPSTREAM_TAG}"
+          if ! git cherry-pick "${patches[@]}"; then
+            echo "::error::The FEL patches no longer apply cleanly on ${UPSTREAM_TAG}. Conflicting files:"
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+
+      - name: Set fork version
+        if: steps.plan.outputs.build == 'true'
+        id: version
+        env:
+          FORK_TAG: ${{ steps.plan.outputs.fork_tag }}
+          REV: ${{ steps.plan.outputs.rev }}
+        run: |
+          set -euo pipefail
+          file=app/build.gradle.kts
+          upstream_code="$(grep -oP '^\s*versionCode\s*=\s*\K[0-9]+' "${file}" | head -1)"
+          [[ -n "${upstream_code}" ]] || { echo "versionCode not found in ${file}." >&2; exit 1; }
+          # Strictly increasing across upstream releases and FEL revisions; the updater requires that.
+          code=$(( upstream_code * 100 + REV ))
+          sed -i -E "s/^(\s*versionCode\s*=\s*)[0-9]+/\1${code}/; s/^(\s*versionName\s*=\s*)\"[^\"]*\"/\1\"${FORK_TAG}\"/" "${file}"
+          grep -nE '^\s*version(Code|Name)\s*=' "${file}"
+          echo "code=${code}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure signing and local properties
+        if: steps.plan.outputs.build == 'true'
+        env:
+          FEL_KEYSTORE_BASE64: ${{ secrets.FEL_KEYSTORE_BASE64 }}
+          FEL_KEY_ALIAS: ${{ secrets.FEL_KEY_ALIAS }}
+          FEL_KEY_PASSWORD: ${{ secrets.FEL_KEY_PASSWORD }}
+          FEL_STORE_PASSWORD: ${{ secrets.FEL_STORE_PASSWORD }}
+          FEL_LOCAL_PROPERTIES_BASE64: ${{ secrets.FEL_LOCAL_PROPERTIES_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in FEL_KEYSTORE_BASE64 FEL_KEY_ALIAS FEL_KEY_PASSWORD FEL_STORE_PASSWORD; do
+            [[ -n "${!name}" ]] || { echo "Missing repository secret ${name}." >&2; exit 1; }
+          done
+          keystore="${RUNNER_TEMP}/fel-release.jks"
+          printf '%s' "${FEL_KEYSTORE_BASE64}" | base64 --decode > "${keystore}"
+          # Optional: your own API keys (TMDB, Trakt, ...) in local.properties format.
+          if [[ -n "${FEL_LOCAL_PROPERTIES_BASE64:-}" ]]; then
+            printf '%s' "${FEL_LOCAL_PROPERTIES_BASE64}" | base64 --decode > local.properties
+          else
+            : > local.properties
+          fi
+          : > local.dev.properties
+          {
+            echo "NUVIO_RELEASE_STORE_FILE=${keystore}"
+            echo "NUVIO_RELEASE_KEY_ALIAS=${FEL_KEY_ALIAS}"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=${FEL_KEY_PASSWORD}"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=${FEL_STORE_PASSWORD}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up Java
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        if: steps.plan.outputs.build == 'true'
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Test updater and build full release APKs
+        if: steps.plan.outputs.build == 'true'
+        run: ./gradlew :app:testFullReleaseUnitTest --tests 'com.nuvio.tv.updater.*' :app:assembleFullRelease --stacktrace
+
+      - name: Verify native playback and FEL patches
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          out=app/build/outputs/apk/full/release
+          for abi in arm64-v8a armeabi-v7a; do
+            apk="${out}/app-full-${abi}-release.apk"
+            python scripts/verify_native_apk.py "${apk}" --abi "${abi}"
+            unzip -p "${apk}" "lib/${abi}/libaml_fel.so" > libaml_fel.so
+            grep -q "/dev/amstream_dves_hevc_frame" libaml_fel.so \
+              || { echo "::error::${abi}: libaml_fel.so lacks the frame-mode port patch." >&2; exit 1; }
+          done
+
+      - name: Publish release
+        if: steps.plan.outputs.build == 'true'
+        env:
+          UPSTREAM_TAG: ${{ steps.plan.outputs.upstream_tag }}
+          FORK_TAG: ${{ steps.plan.outputs.fork_tag }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          set -euo pipefail
+          upstream_notes="$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${UPSTREAM_TAG}" --jq '.body // ""' \
+            | sed -E 's/<!-- nuvio-fork-version-code: [0-9]+ -->//')"
+          {
+            echo "Official Nuvio Arc [${UPSTREAM_TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${UPSTREAM_TAG}) with the FEL patches:"
+            echo
+            cat patch-list.md
+            echo
+            echo "---"
+            echo
+            echo "${upstream_notes}"
+            echo
+            echo "<!-- nuvio-fork-version-code: ${VERSION_CODE} -->"
+            echo "<!-- fel-upstream: ${UPSTREAM_TAG} -->"
+            echo "<!-- fel-fork: ${GITHUB_SHA} -->"
+          } > release-notes.md
+          gh release create "${FORK_TAG}" \
+            app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk \
+            app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk \
+            --target "${GITHUB_SHA}" \
+            --title "Nuvio Arc FEL ${FORK_TAG}" \
+            --notes-file release-notes.md \
+            --latest
