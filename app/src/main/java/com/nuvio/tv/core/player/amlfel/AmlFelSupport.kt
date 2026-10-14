@@ -35,8 +35,15 @@ internal object AmlFelSupport {
         bits and AmlFelNative.DEVICE_DUAL_LAYER_PORT != 0 &&
             bits and AmlFelNative.DEVICE_AMVIDEO_CONTROL != 0 && bits and AmlFelNative.DEVICE_DOLBY_VISION != 0
 
+    /**
+     * FEL test build: the marker check is bypassed so the native path also runs on the stock Ugoos kernel
+     * with `echo enable_fel 1 > /sys/class/amdolby_vision/debug` set as root. Not FEL proof on its own.
+     */
+    private const val FORCE_FEL_KERNEL = true
+
     /** Enabled markers identify the supported custom-kernel contract; they are not visual FEL proof. */
-    fun isFelKernel(): Boolean = FEL_KERNEL_MARKERS.all { readSysfs(it)?.lowercase() in setOf("1", "y", "yes", "true") }
+    fun isFelKernel(): Boolean = FORCE_FEL_KERNEL ||
+        FEL_KERNEL_MARKERS.all { readSysfs(it)?.lowercase() in setOf("1", "y", "yes", "true") }
 
     /** The native FEL path can run: dual-layer port + Dolby Vision driver + FEL-capable kernel. */
     fun isNativeFelUsable(bits: Int = deviceBits()): Boolean = isDeviceUsable(bits) && isFelKernel() && com.nuvio.tv.core.player.DoviBridge.isAvailable()
