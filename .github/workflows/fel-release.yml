@@ -206,7 +206,7 @@ jobs:
             echo "<!-- fel-upstream: ${UPSTREAM_TAG} -->"
             echo "<!-- fel-fork: ${GITHUB_SHA} -->"
           } > release-notes.md
-          gh release create "${FORK_TAG}" \
+          gh release create "${FORK_TAG}" --repo "${GITHUB_REPOSITORY}" \
             app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk \
             app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk \
             --target "${GITHUB_SHA}" \
