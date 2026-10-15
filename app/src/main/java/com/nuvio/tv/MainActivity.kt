@@ -1037,9 +1037,9 @@ open class MainActivity : ComponentActivity() {
                     }
 
                     val pendingLocal by pendingLocalPlayback.collectAsState()
-                    LaunchedEffect(navController, layoutChosen, pendingLocal) {
+                    // Not gated on layoutChosen: the fork bypasses the layout picker, so it can stay false.
+                    LaunchedEffect(navController, pendingLocal) {
                         val local = pendingLocal ?: return@LaunchedEffect
-                        if (!layoutChosen) return@LaunchedEffect
                         pendingLocalPlayback.value = null
                         navController.navigate(
                             Screen.Player.createRoute(
