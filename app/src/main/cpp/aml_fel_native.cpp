@@ -52,7 +52,6 @@ constexpr unsigned long kIocTstampUs64 = 0x40045395;  // _IOW('S', 0x95, int); t
 // AMSTREAM_SET_* / AMSTREAM_GET_* (include/linux/amlogic/media/utils/amstream.h)
 constexpr uint32_t kSetVformat = 0x105;
 constexpr uint32_t kSetVid = 0x107;
-constexpr uint32_t kSetTstampUs64 = 0x10f;
 constexpr uint32_t kPortInit = 0x111;
 constexpr uint32_t kSetPcrscr = 0x118;
 constexpr uint32_t kSetDrmmode = 0x11c;
