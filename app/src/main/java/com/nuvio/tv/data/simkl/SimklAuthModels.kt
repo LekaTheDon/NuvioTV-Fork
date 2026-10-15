@@ -23,7 +23,9 @@ data class SimklPinSession(
     val userCode: String,
     val verificationUri: String,
     val expiresAtEpochMs: Long,
-    val intervalSeconds: Int
+    val intervalSeconds: Int,
+    // FEL fork: set for OAuth 2.0 device sign-in (apps registered on Simkl's newer system).
+    val deviceCode: String? = null
 )
 
 data class SimklAuthState(

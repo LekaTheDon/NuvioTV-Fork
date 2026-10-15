@@ -5,6 +5,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,22 +34,39 @@ class SimklAuthRepository(
     suspend fun startPinAuth(): SimklPinSession = mutex.withLock {
         val authScope = storage.currentScope()
         if (!hasRequiredCredentials()) throw SimklAuthException(SimklAuthError.MISSING_CLIENT_ID)
-        val response = executeAuthRequest(SimklApiRequest(SimklHttpMethod.GET, "/oauth/pin", requiresAuthentication = false))
+        // FEL fork: apps registered on Simkl's newer OAuth 2.0 system are refused by /oauth/pin
+        // ("unauthorized_client") and must use the standard device flow instead.
+        val response = try {
+            executeAuthRequest(SimklApiRequest(SimklHttpMethod.GET, "/oauth/pin", requiresAuthentication = false))
+        } catch (error: SimklAuthException) {
+            if (error.simklErrorCode() != "unauthorized_client") throw error
+            executeAuthRequest(
+                SimklApiRequest(
+                    method = SimklHttpMethod.POST,
+                    path = "/oauth2/device",
+                    body = buildJsonObject { put("client_id", configuration.clientId) }.toString(),
+                    requiresAuthentication = false,
+                    retryPolicy = SimklRetryPolicy.NEVER
+                )
+            )
+        }
         val payload = decodePinResponse(response.body)
+        val deviceCode = payload.deviceCode?.trim()?.takeIf(String::isNotBlank)
         val userCode = payload.userCode?.trim()?.takeIf(String::isNotBlank)
         val verificationUri = (payload.verificationUri ?: payload.verificationUrl)
             ?.trim()
             ?.takeIf(String::isNotBlank)
         val expiresIn = payload.expiresIn?.takeIf { it > 0L }
         val interval = payload.interval?.coerceAtLeast(1)
-        if (payload.result != "OK" || userCode == null || verificationUri == null || expiresIn == null || interval == null) {
+        if ((payload.result != "OK" && deviceCode == null) || userCode == null || verificationUri == null || expiresIn == null || interval == null) {
             throw SimklAuthException(SimklAuthError.INVALID_PIN_RESPONSE)
         }
         val session = SimklPinSession(
             userCode = userCode,
             verificationUri = verificationUri,
             expiresAtEpochMs = nowEpochMs() + expiresIn * 1_000L,
-            intervalSeconds = interval
+            intervalSeconds = interval,
+            deviceCode = deviceCode
         )
         if (!storage.savePinSession(session, authScope)) {
             throw SimklAuthException(SimklAuthError.PIN_INVALIDATED)
@@ -61,6 +80,9 @@ class SimklAuthRepository(
         if (nowEpochMs() >= session.expiresAtEpochMs) {
             storage.clearPinSession(SimklAuthError.PIN_EXPIRED, authScope)
             return@withLock SimklPinPollResult.Expired
+        }
+        session.deviceCode?.let { deviceCode ->
+            return@withLock pollDeviceToken(deviceCode, authScope)
         }
         if (!PIN_PATTERN.matches(session.userCode)) {
             storage.clearPinSession(SimklAuthError.PIN_INVALIDATED, authScope)
@@ -149,11 +171,57 @@ class SimklAuthRepository(
         throw SimklAuthException(SimklAuthError.NETWORK, error)
     }
 
+    // FEL fork: OAuth 2.0 device flow token exchange (RFC 8628). Waiting states arrive as HTTP 400.
+    private suspend fun pollDeviceToken(deviceCode: String, authScope: SimklAuthScope): SimklPinPollResult {
+        val response = try {
+            executeAuthRequest(
+                SimklApiRequest(
+                    method = SimklHttpMethod.POST,
+                    path = "/oauth2/token",
+                    body = buildJsonObject {
+                        put("grant_type", DEVICE_CODE_GRANT)
+                        put("device_code", deviceCode)
+                        put("client_id", configuration.clientId)
+                    }.toString(),
+                    requiresAuthentication = false,
+                    retryPolicy = SimklRetryPolicy.NEVER
+                )
+            )
+        } catch (error: SimklAuthException) {
+            when (error.simklErrorCode()) {
+                "authorization_pending", "slow_down" -> return SimklPinPollResult.Pending
+                "expired_token" -> {
+                    storage.clearPinSession(SimklAuthError.PIN_EXPIRED, authScope)
+                    return SimklPinPollResult.Expired
+                }
+                "access_denied", "invalid_grant" -> {
+                    storage.clearPinSession(SimklAuthError.PIN_INVALIDATED, authScope)
+                    return SimklPinPollResult.Invalidated
+                }
+                else -> throw error
+            }
+        }
+        val token = decodePinResponse(response.body).accessToken?.trim()?.takeIf(String::isNotBlank)
+            ?: throw SimklAuthException(SimklAuthError.INVALID_PIN_RESPONSE)
+        if (!storage.completePinAuthorization(token, authScope)) return SimklPinPollResult.Invalidated
+        try {
+            refreshUserSettings(scope = authScope)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            Unit
+        }
+        return SimklPinPollResult.Authorized
+    }
+
+    private fun SimklAuthException.simklErrorCode(): String? = (cause as? SimklApiException)?.errorCode
+
     private fun decodePinResponse(body: String): SimklPinResponse =
         runCatching { json.decodeFromString<SimklPinResponse>(body) }
             .getOrElse { throw SimklAuthException(SimklAuthError.INVALID_PIN_RESPONSE, it) }
 
     private companion object {
         val PIN_PATTERN = Regex("[A-Za-z0-9]{4,12}")
+        const val DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
     }
 }
