@@ -114,12 +114,16 @@ class TraktAuthService @Inject constructor(
         }
     }
 
+    /** Null for secretless (PKCE) Trakt apps, so the field is left out of requests. */
+    private fun traktClientSecret(): String? = BuildConfig.TRAKT_CLIENT_SECRET.ifBlank { null }
+
     private fun traktRedirectUri(): String {
         return BuildConfig.TRAKT_REDIRECT_URI.ifBlank { "urn:ietf:wg:oauth:2.0:oob" }
     }
 
     fun hasRequiredCredentials(): Boolean {
-        return BuildConfig.TRAKT_CLIENT_ID.isNotBlank() && BuildConfig.TRAKT_CLIENT_SECRET.isNotBlank()
+        // FEL fork: Trakt PKCE apps have no client secret, so only the client ID is required.
+        return BuildConfig.TRAKT_CLIENT_ID.isNotBlank()
     }
 
     suspend fun getCurrentAuthState(): TraktAuthState = traktAuthDataStore.getCurrentState()
@@ -214,7 +218,7 @@ class TraktAuthService @Inject constructor(
                 TraktDeviceTokenRequestDto(
                     code = deviceCode,
                     clientId = BuildConfig.TRAKT_CLIENT_ID,
-                    clientSecret = BuildConfig.TRAKT_CLIENT_SECRET
+                    clientSecret = traktClientSecret()
                 )
             )
         } catch (e: IOException) {
@@ -279,7 +283,7 @@ class TraktAuthService @Inject constructor(
                         TraktRefreshTokenRequestDto(
                             refreshToken = refreshToken,
                             clientId = BuildConfig.TRAKT_CLIENT_ID,
-                            clientSecret = BuildConfig.TRAKT_CLIENT_SECRET,
+                            clientSecret = traktClientSecret(),
                             redirectUri = traktRedirectUri()
                         )
                     )
@@ -322,7 +326,7 @@ class TraktAuthService @Inject constructor(
                         TraktRevokeRequestDto(
                             token = accessToken,
                             clientId = BuildConfig.TRAKT_CLIENT_ID,
-                            clientSecret = BuildConfig.TRAKT_CLIENT_SECRET
+                            clientSecret = traktClientSecret()
                         )
                     )
                 }
