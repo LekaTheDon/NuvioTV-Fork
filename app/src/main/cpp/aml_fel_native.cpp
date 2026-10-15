@@ -34,10 +34,11 @@
 
 namespace {
 
-// FEL test build: the frame-mode dual-layer port. On the stock Ugoos kernel the stream-mode port never
-// starts the legacy video PTS table, so AMSTREAM_SET_TSTAMP_US64 fails with EINVAL; the frame port takes
-// the PTS per frame (vdec_set_pts64) and each write() is one whole sample, as queueSample() already sends.
-constexpr const char *kDvesHevc = "/dev/amstream_dves_hevc_frame";
+// FEL fork: the stream-mode dual-layer port, as CoreELEC uses for FEL (the frame-mode port runs a single
+// decoder and never decodes the EL). On the stock Ugoos kernel AMSTREAM_SET_TSTAMP_US64 goes through the
+// legacy video PTS table, which never starts there (EINVAL); AMSTREAM_IOC_TSTAMP_uS64 instead checks the
+// PTS in against the stream-buffer offset (pts_checkin_offset_us64) for no-parser dual-layer ports.
+constexpr const char *kDvesHevc = "/dev/amstream_dves_hevc";
 constexpr const char *kAmvideo = "/dev/amvideo";
 
 // ioctl numbers (magic 'S'); identical to vcodec.c.
@@ -46,6 +47,7 @@ constexpr unsigned long kIocVbStatus = 0x80045308;    // _IOR('S', 0x08, int)
 constexpr unsigned long kIocVpause = 0x40045317;      // _IOW('S', 0x17, int), on /dev/amvideo
 constexpr unsigned long kIocGet = 0xc01053c1;         // _IOWR('S', 0xc1, struct am_ioctl_parm)
 constexpr unsigned long kIocSet = 0x401053c2;         // _IOW('S', 0xc2, struct am_ioctl_parm)
+constexpr unsigned long kIocTstampUs64 = 0x40045395;  // _IOW('S', 0x95, int); the argument points to a u64
 
 // AMSTREAM_SET_* / AMSTREAM_GET_* (include/linux/amlogic/media/utils/amstream.h)
 constexpr uint32_t kSetVformat = 0x105;
@@ -232,8 +234,12 @@ Java_com_nuvio_tv_core_player_amlfel_AmlFelNative_nativeDrain(JNIEnv *, jclass, 
     if (!s || s->fd < 0) return -EBADF;
     if (s->pendingOffset >= s->pendingLength) return 0;
     if (!s->pendingPtsSet) {
-        int r = setParam(s->fd, kSetTstampUs64, static_cast<uint64_t>(s->pendingPtsUs));
-        if (r < 0) return r;
+        uint64_t pts = static_cast<uint64_t>(s->pendingPtsUs);
+        if (ioctl(s->fd, kIocTstampUs64, &pts) < 0) {
+            int e = errno;
+            LOGW("AMSTREAM_IOC_TSTAMP_uS64 failed: %s", strerror(e));
+            return -e;
+        }
         s->pendingPtsSet = true;
     }
     while (s->pendingOffset < s->pendingLength) {

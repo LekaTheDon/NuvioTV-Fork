@@ -179,8 +179,11 @@ jobs:
             apk="${out}/app-full-${abi}-release.apk"
             python scripts/verify_native_apk.py "${apk}" --abi "${abi}"
             unzip -p "${apk}" "lib/${abi}/libaml_fel.so" > libaml_fel.so
-            grep -q "/dev/amstream_dves_hevc_frame" libaml_fel.so \
-              || { echo "::error::${abi}: libaml_fel.so lacks the frame-mode port patch." >&2; exit 1; }
+            grep -q "AMSTREAM_IOC_TSTAMP_uS64" libaml_fel.so \
+              || { echo "::error::${abi}: libaml_fel.so lacks the stream-port timestamp patch." >&2; exit 1; }
+            if grep -q "/dev/amstream_dves_hevc_frame" libaml_fel.so; then
+              echo "::error::${abi}: libaml_fel.so still uses the frame-mode port." >&2; exit 1
+            fi
           done
 
       - name: Publish release
