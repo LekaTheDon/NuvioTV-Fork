@@ -338,6 +338,20 @@ open class MainActivity : ComponentActivity() {
 
     private val pendingDeepLinkUrl = MutableStateFlow<String?>(null)
     private val pendingLaunchIntent = MutableStateFlow<Intent?>(null)
+    // FEL fork: local video opened from a file manager ("Open with").
+    private val pendingLocalPlayback = MutableStateFlow<com.nuvio.tv.core.player.LocalFilePlayback?>(null)
+    private var localPlaybackAwaitingPermission: com.nuvio.tv.core.player.LocalFilePlayback? = null
+    private val localFilePermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val local = localPlaybackAwaitingPermission ?: return@registerForActivityResult
+        localPlaybackAwaitingPermission = null
+        if (granted) {
+            pendingLocalPlayback.value = local
+        } else {
+            Toast.makeText(this, "Storage permission is needed to play this file", Toast.LENGTH_LONG).show()
+        }
+    }
 
     private lateinit var jankStats: JankStats
     private val qualityGovernor = com.nuvio.tv.ui.v2.quality.AutomaticQualityGovernor()
@@ -1022,6 +1036,24 @@ open class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    val pendingLocal by pendingLocalPlayback.collectAsState()
+                    LaunchedEffect(navController, layoutChosen, pendingLocal) {
+                        val local = pendingLocal ?: return@LaunchedEffect
+                        if (!layoutChosen) return@LaunchedEffect
+                        pendingLocalPlayback.value = null
+                        navController.navigate(
+                            Screen.Player.createRoute(
+                                streamUrl = local.uri,
+                                title = local.displayName,
+                                streamName = local.displayName,
+                                filename = local.displayName,
+                                videoSize = local.sizeBytes,
+                                startFromBeginning = true,
+                                returnToHomeOnBack = true
+                            )
+                        )
+                    }
+
                     val pendingLaunch by pendingLaunchIntent.collectAsState()
                     LaunchedEffect(navController, layoutChosen, pendingLaunch) {
                         val intent = pendingLaunch ?: return@LaunchedEffect
@@ -1445,6 +1477,15 @@ open class MainActivity : ComponentActivity() {
     }
 
     private fun captureDeepLinkIntent(intent: Intent?) {
+        com.nuvio.tv.core.player.LocalFilePlayback.fromIntent(this, intent)?.let { local ->
+            if (local.isFileUri && !com.nuvio.tv.core.player.LocalFilePlayback.hasReadPermission(this)) {
+                localPlaybackAwaitingPermission = local
+                localFilePermissionLauncher.launch(com.nuvio.tv.core.player.LocalFilePlayback.readPermission)
+            } else {
+                pendingLocalPlayback.value = local
+            }
+            return
+        }
         val url = intent?.dataString?.trim()?.takeIf(String::isNotBlank) ?: return
         pendingDeepLinkUrl.value = url
     }

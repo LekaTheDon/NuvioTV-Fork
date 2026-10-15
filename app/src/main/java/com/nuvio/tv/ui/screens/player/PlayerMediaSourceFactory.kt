@@ -251,8 +251,10 @@ internal class PlayerMediaSourceFactory(
         val isDash = resolvedMimeType == MimeTypes.APPLICATION_MPD
         val mediaServer = isMediaServerUrl(url)
         val parallel = usesParallelConnections(useParallelConnections, mediaServer)
-        val mp4SessionMode = usesMp4Session(parallel, mediaServer, isHls || isDash, resolvedMimeType, url)
-        val useChunkSessionSource = (parallel || mp4SessionMode) && !isHls && !isDash
+        // FEL fork: local content:// / file:// playback reads through DefaultDataSource, never the HTTP chunk session.
+        val remote = shouldUseVodCache(url)
+        val mp4SessionMode = remote && usesMp4Session(parallel, mediaServer, isHls || isDash, resolvedMimeType, url)
+        val useChunkSessionSource = remote && (parallel || mp4SessionMode) && !isHls && !isDash
         return ChunkSessionShape(
             resolvedMimeType = resolvedMimeType,
             isHls = isHls,
