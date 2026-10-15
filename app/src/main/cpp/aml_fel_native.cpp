@@ -55,11 +55,16 @@ constexpr uint32_t kSetVid = 0x107;
 constexpr uint32_t kPortInit = 0x111;
 constexpr uint32_t kSetPcrscr = 0x118;
 constexpr uint32_t kSetDrmmode = 0x11c;
+constexpr uint32_t kSetFrameBasePath = 0x174;
 constexpr uint32_t kSetDvMetaWithEl = 0x179;
 constexpr uint32_t kGetVpts = 0x805;
 constexpr uint32_t kVformatHevc = 11;      // VFORMAT_HEVC
 constexpr uint32_t kDecFormatHevc = 15;    // VIDEO_DEC_FORMAT_HEVC
 constexpr uint32_t kExternalPts = 1;       // dec_sysinfo.param: timestamps come from the app
+// FEL fork: FRAME_BASE_PATH_AMLVIDEO_AMVIDEO routes decoded frames "amlvideo deinterlace amvideo", where the
+// Dolby Vision driver picks up the RPU and composes the EL. libamcodec (CoreELEC/Kodi) sets it for every
+// multi-instance port; left unset the decoder uses path 0 (ionvideo) and the DV core only sees HDR10.
+constexpr uint32_t kFrameBasePathAmlvideoAmvideo = 1;
 
 struct SetParam { uint64_t data; uint32_t cmd; uint32_t reserved; };
 struct SysInfo { uint32_t format, width, height, rate, extra, status, ratio; void *param; uint64_t ratio64; };
@@ -184,6 +189,9 @@ Java_com_nuvio_tv_core_player_amlfel_AmlFelNative_nativeOpen(
     do {
         if ((r = setParam(fd, kSetVformat, kVformatHevc)) < 0) break;
         if ((r = setParam(fd, kSetVid, 0)) < 0) break;
+        if (setParam(fd, kSetFrameBasePath, kFrameBasePathAmlvideoAmvideo) < 0) {
+            LOGW("AMSTREAM_SET_FRAME_BASE_PATH not accepted; continuing with the default path");
+        }
         SysInfo si{kDecFormatHevc, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                    static_cast<uint32_t>(rate > 0 ? rate : 4004), 0, 0, 0,
                    reinterpret_cast<void *>(static_cast<uintptr_t>(kExternalPts)), 0};
