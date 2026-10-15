@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 
@@ -18,6 +19,18 @@ data class LocalFilePlayback(
     val sizeBytes: Long?
 ) {
     val isFileUri: Boolean get() = uri.startsWith("file:", ignoreCase = true)
+
+    /**
+     * file:// paths always need the storage permission. content:// URIs normally carry a read grant, but some
+     * file managers hand over a MediaStore URI without one, so check that the URI can actually be opened.
+     */
+    fun needsReadPermission(context: Context): Boolean {
+        if (hasReadPermission(context)) return false
+        if (isFileUri) return true
+        return runCatching {
+            context.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.close()
+        }.isFailure
+    }
 
     companion object {
         private val LOCAL_SCHEMES = setOf("content", "file")
@@ -54,7 +67,7 @@ data class LocalFilePlayback(
             return LocalFilePlayback(uri.toString(), displayName, size?.takeIf { it > 0L })
         }
 
-        /** Storage permission needed to read file:// paths (content:// URIs carry their own grant). */
+        /** Storage permission for file:// paths and for MediaStore URIs passed without a read grant. */
         val readPermission: String
             get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 Manifest.permission.READ_MEDIA_VIDEO

@@ -1478,7 +1478,7 @@ open class MainActivity : ComponentActivity() {
 
     private fun captureDeepLinkIntent(intent: Intent?) {
         com.nuvio.tv.core.player.LocalFilePlayback.fromIntent(this, intent)?.let { local ->
-            if (local.isFileUri && !com.nuvio.tv.core.player.LocalFilePlayback.hasReadPermission(this)) {
+            if (local.needsReadPermission(this)) {
                 localPlaybackAwaitingPermission = local
                 localFilePermissionLauncher.launch(com.nuvio.tv.core.player.LocalFilePlayback.readPermission)
             } else {
