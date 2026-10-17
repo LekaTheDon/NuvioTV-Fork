@@ -589,7 +589,7 @@ internal class AmlDvFelVideoRenderer(
         // Sideband first (HWC switches VD1 to the amvideo path and sets the axis), then the port.
         if (sidebandHandle == 0L) attachSideband()
         val opened = AmlFelNative.open(format.width, format.height, AmlFelSupport.rate96k(format.frameRate))
-        if (opened <= 0L) throw failure("open", opened)
+        if (isNativeError(opened)) throw failure("open", opened)
         handle = opened
         val now = SystemClock.elapsedRealtime()
         sessionOpenedRealtimeMs = now
@@ -645,7 +645,7 @@ internal class AmlDvFelVideoRenderer(
             return
         }
         val r = AmlFelNative.attachSideband(surface)
-        if (r > 0L) {
+        if (!isNativeError(r)) {
             sidebandHandle = r
         } else {
             Log.w(TAG, "sideband: attach failed (errno ${-r}); transparent-hole mode")
@@ -804,6 +804,17 @@ internal class AmlDvFelVideoRenderer(
     }
 
     // --- errors ---
+
+    /**
+     * nativeOpen/nativeAttachSideband return a native pointer, or a small negative -errno.
+     *
+     * A pointer is NOT always positive as a signed Long: Android's allocator hands out tagged
+     * pointers whose top byte carries the tag (0xb400007f..., so bit 63 is set), and testing one
+     * with "<= 0" reads a perfectly good handle as a failure. That turned a working native FEL
+     * session into "open failed: errno 1418438160" - the low 32 bits of the pointer - and sent
+     * playback down the 8.1-conversion fallback. Only the -errno range means failure.
+     */
+    private fun isNativeError(value: Long): Boolean = value == 0L || value in -4095L..-1L
 
     private fun failure(operation: String, code: Long): ExoPlaybackException = failure(operation, code.toInt())
 
