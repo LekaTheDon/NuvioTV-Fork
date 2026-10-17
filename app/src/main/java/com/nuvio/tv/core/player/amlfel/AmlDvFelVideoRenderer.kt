@@ -76,6 +76,8 @@ internal class AmlDvFelVideoRenderer(
         /** After the clock first moves, how long to wait for a frame near the target before taking what is shown. */
         private const val FIRST_FRAME_TARGET_GRACE_MS = 750L
         private const val STALL_TIMEOUT_MS = 8_000L
+        /** How long to wait for a video output before opening the port without one. */
+        private const val OUTPUT_WAIT_TIMEOUT_MS = 3_000L
         private const val VPTS_POLL_MS = 250L
         /** No in-band RPU NAL at all within this many samples = not a single-track P7 stream: fall back. */
         private const val NO_RPU_FALLBACK_SAMPLES = 12
@@ -126,6 +128,7 @@ internal class AmlDvFelVideoRenderer(
 
     private var inputFormat: Format? = null
     private var videoOutput: Any? = null
+    private var outputWaitStartedMs = 0L
     private var handle = 0L
     private var sidebandHandle = 0L
     private var samplePending = false
@@ -314,6 +317,7 @@ internal class AmlDvFelVideoRenderer(
             if (readSource(holder, inputBuffer, SampleStream.FLAG_REQUIRE_FORMAT) != C.RESULT_FORMAT_READ) return
             onInputFormatChanged(checkNotNull(holder.format))
         }
+        if (handle == 0L && !outputReadyForSession()) return
         feed()
         if (handle == 0L) return
         val now = SystemClock.elapsedRealtime()
@@ -322,6 +326,29 @@ internal class AmlDvFelVideoRenderer(
         slaveClock(positionUs, now)
         maybeRefreshSideband(now)
         checkStall(now)
+    }
+
+    /**
+     * Whether to open the port yet.
+     *
+     * The sideband stream has to be set on a Surface before the port opens: HWC only switches VD1 to
+     * the amvideo path when it sees one, and this firmware disables the video plane without it
+     * (/sys/class/video/disable_video=2, nothing reaches the display queue, VPTS frozen) - the
+     * session then decodes both layers into a plane nobody shows until [checkStall] gives up. The
+     * Surface can arrive after the first sample, so wait briefly for it; open anyway after that
+     * rather than stalling for ever on a player that genuinely never provides one.
+     */
+    private fun outputReadyForSession(): Boolean {
+        if (videoOutput != null) return true
+        val now = SystemClock.elapsedRealtime()
+        if (outputWaitStartedMs == 0L) {
+            outputWaitStartedMs = now
+            Log.i(TAG, "waiting for a video output before opening the port")
+            return false
+        }
+        if (now - outputWaitStartedMs < OUTPUT_WAIT_TIMEOUT_MS) return false
+        Log.w(TAG, "no video output after ${now - outputWaitStartedMs} ms; opening without sideband")
+        return true
     }
 
     // --- input ---
@@ -631,6 +658,7 @@ internal class AmlDvFelVideoRenderer(
         if (handle == 0L) return
         AmlFelNative.close(handle) // also un-pauses tsync
         handle = 0L
+        outputWaitStartedMs = 0L // the next session waits for its own output
         samplePending = false
         pausedApplied = false
         sessionFirstFrame = false
@@ -647,6 +675,7 @@ internal class AmlDvFelVideoRenderer(
         val r = AmlFelNative.attachSideband(surface)
         if (!isNativeError(r)) {
             sidebandHandle = r
+            Log.i(TAG, "sideband: attached")
         } else {
             Log.w(TAG, "sideband: attach failed (errno ${-r}); transparent-hole mode")
         }
@@ -791,6 +820,11 @@ internal class AmlDvFelVideoRenderer(
      */
     private fun checkStall(now: Long) {
         if (!started || inputEnded) return
+        // Nothing can be presented without an output, so a frozen VPTS says nothing about the decoder.
+        if (videoOutput == null) {
+            lastProgressRealtimeMs = now
+            return
+        }
         if (now - lastVptsPollMs >= VPTS_POLL_MS) {
             lastVptsPollMs = now
             val vpts = AmlFelNative.getVpts(handle)
